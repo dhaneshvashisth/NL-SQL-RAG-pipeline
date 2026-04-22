@@ -1,0 +1,33 @@
+# Environment secrets - NEVER commit this
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+.vscode/
+.idea/
+*.swp
+
+# Docker volumes (local data)
+postgres_data/
+qdrant_data/
+redis_data/
+
+# OS
+.DS_Store
+Thumbs.db
