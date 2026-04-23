@@ -1,3 +1,7 @@
+
+from dotenv import load_dotenv
+load_dotenv()
+
 import os ,sys, psycopg2, random
 import bcrypt
 from datetime import datetime, timedelta, timezone
@@ -6,8 +10,9 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from app.utils.config import config
+from app.utils.config import config      
 from app.utils.logger import get_logger
+
 
 logger = get_logger(__name__)
 fake = Faker()
@@ -205,8 +210,8 @@ def run_seed():
         logger.info("=" * 50)
         logger.info("DATABASE SEEDING COMPLETE")
         logger.info("Admin    : 1  | login: admin_dv / Admin@1234")
-        logger.info("Supervisors: 3 | login: supervisor_priya / Super@1234")
-        logger.info("Agents   : 9  | login: agent_aditya / Agent@1234")
+        logger.info("Supervisors: 3 | login: supervisor_virat / Super@1234")
+        logger.info("Agents   : 9  | login: agent_abhishek / Agent@1234")
         logger.info("Platforms: 5")
         logger.info("Transactions: %d", txn_count)
         logger.info("=" * 50)
