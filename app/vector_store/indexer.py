@@ -1,5 +1,5 @@
 import asyncio
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, QueryResponse
 from app.utils.config import config
 
 
@@ -95,12 +95,12 @@ async def retrieve_relevant_schemas( query: str, top_k: int = 3) -> list[dict]:
     query_vector = await embed_text(query)
 
     client = get_qdrant_client()
-    results = client.search(
+    results = client.query_points(
         collection_name=config.QDRANT_COLLECTION_NAME,
-        query_vector=query_vector,
+        query=query_vector,
         limit=top_k,
         with_payload=True  
-    )
+    ).points
 
     retrieved = []
     for result in results:
