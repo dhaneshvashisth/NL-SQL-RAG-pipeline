@@ -1,5 +1,6 @@
 import asyncio
-from app.cache.redis_cache import semantic_cache
+from app.cache.redis_cache import 
+
 from app.vector_store.embedder import embed_text
 
 async def test():
