@@ -25,28 +25,27 @@ def _contains_forbidden_keywords(sql: str) -> str | None:
     return None
 
 
+def _clean_placeholders(sql: str, token_data) -> str:
+    """
+    Replaces any template placeholders like {agent_id}, {user_id}
+    that the LLM sometimes generates instead of real values.
+    
+    WHY THIS HAPPENS:
+    LLMs sometimes generate parameterized-style placeholders
+    when they're uncertain of the actual value. We replace them
+    with real values from token_data before execution.
+    """
+    replacements = {
+        "{agent_id}":      str(token_data.user_id),
+        "{user_id}":       str(token_data.user_id),
+        "{supervisor_id}": str(token_data.user_id),
+        "{parent_id}":     str(token_data.parent_id or "NULL"),
+    }
+    for placeholder, value in replacements.items():
+        sql = sql.replace(placeholder, value)
+    return sql
+
 def _inject_rbac_clause(sql: str, token_data) -> tuple[str, bool]:
-    """
-    Appends role-based WHERE clause to the SQL.
-
-    WHY APPEND NOT REWRITE?
-    We trust the LLM-generated SQL structure.
-    We just add one more constraint at the end.
-
-    AGENT EXAMPLE:
-    Input:  SELECT * FROM transactions WHERE status = 'pending'
-    Output: SELECT * FROM transactions WHERE status = 'pending'
-            AND agent_id = 5
-
-    SUPERVISOR EXAMPLE:
-    Input:  SELECT * FROM transactions WHERE status = 'pending'
-    Output: SELECT * FROM transactions WHERE status = 'pending'
-            AND agent_id IN (SELECT id FROM users WHERE parent_id = 2)
-
-    ADMIN: No change — full access.
-
-    RETURNS: (modified_sql, was_rbac_injected)
-    """
     scope = get_rbac_scope(token_data)
 
     if scope.filter_column is None:
@@ -55,42 +54,62 @@ def _inject_rbac_clause(sql: str, token_data) -> tuple[str, bool]:
 
     sql = sql.rstrip(";").strip()
 
+  
     if scope.filter_column == "supervisor":
-        rbac_clause = (
-            f" AND agent_id IN "
+        already_scoped = f"parent_id = {scope.filter_value}" in sql
+    else:
+        already_scoped = (
+            f"{scope.filter_column} = {scope.filter_value}" in sql or
+            f"agent_id = {scope.filter_value}" in sql
+        )
+
+    if already_scoped:
+        logger.info(
+            "RBAC: Scope already present in SQL — skipping injection | role=%s",
+            token_data.role.value
+        )
+        return sql, False
+
+    if scope.filter_column == "supervisor":
+        rbac_condition = (
+            f"agent_id IN "
             f"(SELECT id FROM users WHERE parent_id = {scope.filter_value} "
             f"AND role = 'agent')"
         )
     else:
-        rbac_clause = f" AND {scope.filter_column} = {scope.filter_value}"
+        rbac_condition = f"{scope.filter_column} = {scope.filter_value}"
 
-    if "WHERE" in sql.upper():
-        modified_sql = sql + rbac_clause
-    else:
-        order_match = re.search(r'\bORDER\s+BY\b', sql.upper())
-        limit_match = re.search(r'\bLIMIT\b', sql.upper())
+    sql_upper = sql.upper()
+    order_pos = re.search(r'\bORDER\s+BY\b', sql_upper)
+    limit_pos = re.search(r'\bLIMIT\b', sql_upper)
 
-        insert_pos = None
-        if order_match:
-            insert_pos = order_match.start()
-        elif limit_match:
-            insert_pos = limit_match.start()
+    insert_pos = None
+    if order_pos:
+        insert_pos = order_pos.start()
+    if limit_pos:
+        if insert_pos is None or limit_pos.start() < insert_pos:
+            insert_pos = limit_pos.start()
 
-        if insert_pos:
-            modified_sql = (
-                sql[:insert_pos] +
-                f"WHERE {scope.filter_column} = {scope.filter_value} " +
-                sql[insert_pos:]
-            )
+    has_where = "WHERE" in sql_upper
+
+    if insert_pos is not None:
+        before = sql[:insert_pos].rstrip()
+        after  = sql[insert_pos:]
+        if has_where:
+            modified_sql = f"{before} AND {rbac_condition} {after}"
         else:
-            modified_sql = sql + f" WHERE {scope.filter_column} = {scope.filter_value}"
+            modified_sql = f"{before} WHERE {rbac_condition} {after}"
+    else:
+        if has_where:
+            modified_sql = f"{sql} AND {rbac_condition}"
+        else:
+            modified_sql = f"{sql} WHERE {rbac_condition}"
 
     logger.info(
-        "RBAC injected | role=%s | clause='%s'",
-        token_data.role.value, rbac_clause.strip()
+        "RBAC injected | role=%s | condition='%s'",
+        token_data.role.value, rbac_condition
     )
     return modified_sql, True
-
 
 async def sql_validation_node(state: GraphState) -> GraphState:
     """
@@ -117,18 +136,20 @@ async def sql_validation_node(state: GraphState) -> GraphState:
         logger.warning("Node 3: Empty SQL generated")
         return {
             **state,
-            "is_valid":        False,
+            "is_valid":   False,
             "validation_error": "Generated SQL is empty. Generate a valid SELECT query."
         }
+    
+    sql = _clean_placeholders(sql, token_data)
+    logger.info("Placeholders cleaned | sql='%s'", sql[:80])
 
     forbidden = _contains_forbidden_keywords(sql)
     if forbidden:
         logger.warning("Node 3: Forbidden keyword '%s' found", forbidden)
         return {
             **state,
-            "is_valid":        False,
-            "validation_error": f"SQL contains forbidden keyword '{forbidden}'. "
-                               f"Only SELECT statements are allowed."
+            "is_valid":  False,
+            "validation_error": f"SQL contains forbidden keyword '{forbidden}'. Only SELECT statements are allowed."
         }
 
     sql_clean = sql.strip().upper()
@@ -136,9 +157,8 @@ async def sql_validation_node(state: GraphState) -> GraphState:
         logger.warning("Node 3: SQL does not start with SELECT")
         return {
             **state,
-            "is_valid":        False,
-            "validation_error": "SQL must start with SELECT. "
-                               "No other statement types are permitted."
+            "is_valid":False,
+            "validation_error": "SQL must start with SELECT. No other statement types are permitted."
         }
 
     try:
@@ -147,7 +167,7 @@ async def sql_validation_node(state: GraphState) -> GraphState:
         logger.error("Node 3: RBAC injection failed | %s", str(e))
         return {
             **state,
-            "is_valid":        False,
+            "is_valid": False,
             "validation_error": f"RBAC enforcement failed: {str(e)}"
         }
 
