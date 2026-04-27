@@ -65,18 +65,37 @@ def _cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
     return float(dot_product / magnitude)
 
 
-def _make_cache_key(question: str) -> str:
-    """
-    Creates a unique Redis key for a cache entry.
-    Uses MD5 hash of the question — short, unique, consistent.
+# def _make_cache_key(question: str) -> str:
+#     """
+#     Creates a unique Redis key for a cache entry.
+#     Uses MD5 hash of the question — short, unique, consistent.
     
-    WHY HASH THE QUESTION?
-    Redis keys should be short. A 200-char question as a key
-    wastes memory. MD5 gives a fixed 32-char key.
-    Collisions are astronomically unlikely for our use case.
+#     WHY HASH THE QUESTION?
+#     Redis keys should be short. A 200-char question as a key
+#     wastes memory. MD5 gives a fixed 32-char key.
+#     Collisions are astronomically unlikely for our use case.
+#     """
+#     question_hash = hashlib.md5(question.encode()).hexdigest()
+#     # return f"{CACHE_PREFIX}{question_hash}"
+#     return f"{CACHE_PREFIX}{role}:{user_id}:{question_hash}"
+
+def _make_cache_key(question: str, user_id: int, role: str) -> str:
+    """
+    Creates a role-scoped cache key.
+
+    WHY INCLUDE role + user_id?
+    "show pending transactions" means different data for:
+    - admin      → all transactions
+    - supervisor → their team's transactions  
+    - agent_dhoni → only dhoni's transactions
+
+    Same question + different role = different SQL = different cache entry.
+    Without this, admin's result leaks to agents. Critical security fix.
+
+    Key format: nlsql:cache:{role}:{user_id}:{question_hash}
     """
     question_hash = hashlib.md5(question.encode()).hexdigest()
-    return f"{CACHE_PREFIX}{question_hash}"
+    return f"{CACHE_PREFIX}{role}:{user_id}:{question_hash}"
 
 
 class SemanticCache:
@@ -117,7 +136,9 @@ class SemanticCache:
     def get(
         self,
         question: str,
-        question_vector: list[float]
+        question_vector: list[float],
+        user_id: int,     
+        role: str
     ) -> dict | None:
         """
         Looks for a semantically similar cached question.
@@ -151,6 +172,10 @@ class SemanticCache:
             for key_bytes in cache_keys:
                 key = key_bytes.decode("utf-8")
 
+                expected_prefix = f"{CACHE_PREFIX}{role}:{user_id}:"
+                if not key.startswith(expected_prefix):
+                    continue
+
                 entry_bytes = self.client.get(key)
                 if not entry_bytes:
                     continue  
@@ -163,7 +188,6 @@ class SemanticCache:
                     continue
 
                 cached_vec = _bytes_to_vector(vector_bytes)
-
                 similarity = _cosine_similarity(query_vec, cached_vec)
 
                 if similarity > best_similarity:
@@ -172,16 +196,16 @@ class SemanticCache:
 
             if best_similarity >= SIMILARITY_THRESHOLD and best_entry:
                 logger.info(
-                    "Cache HIT | similarity=%.4f | original_question='%s'",
-                    best_similarity,
+                    "Cache HIT |  role=%s | user_id=%d | similarity=%.4f | original_question='%s'",
+                    best_similarity, role, user_id, 
                     best_entry.get("question", "")[:50]
                 )
                 best_entry["cache_similarity"] = best_similarity
                 return best_entry
 
             logger.info(
-                "Cache MISS | best_similarity=%.4f | threshold=%.2f",
-                best_similarity, SIMILARITY_THRESHOLD
+                "Cache MISS | role=%s | user_id=%d | best_similarity=%.4f | threshold=%.2f",
+                role, user_id, best_similarity, SIMILARITY_THRESHOLD
             )
             return None
 
@@ -196,7 +220,9 @@ class SemanticCache:
         question_vector: list[float],
         generated_sql:   str,
         result:          Any,
-        row_count:       int = 0
+        row_count:       int = 0,
+        user_id:         int = 0,
+        role:            str = ""
     ) -> bool:
         """
         Stores a question + result in Redis cache.
@@ -209,7 +235,7 @@ class SemanticCache:
         Also adds the cache key to our index list.
         """
         try:
-            cache_key  = _make_cache_key(question)
+            cache_key  = _make_cache_key(question , user_id, role)
             vector_key = cache_key.replace(CACHE_PREFIX, VECTOR_PREFIX)
 
             entry = {
@@ -217,28 +243,22 @@ class SemanticCache:
                 "generated_sql": generated_sql,
                 "result":       result,
                 "row_count":    row_count,
+                "role":          role,     
+                "user_id":       user_id,
                 "cached_at":    datetime.now(timezone.utc).isoformat(),
             }
 
             ttl = config.REDIS_TTL_SECONDS
 
-            self.client.setex(
-                cache_key,
-                ttl,
-                json.dumps(entry, default=str)
-            )
+            self.client.setex(cache_key, ttl, json.dumps(entry, default=str))
 
-            self.client.setex(
-                vector_key,
-                ttl,
-                _vector_to_bytes(question_vector)
-            )
+            self.client.setex(vector_key, ttl,  _vector_to_bytes(question_vector) )
 
             self.client.lpush(INDEX_KEY, cache_key)
 
             logger.info(
-                "Cache SET | question='%s' | TTL=%ds | sql_length=%d",
-                question[:50], ttl, len(generated_sql)
+                "Cache SET | role=%s | user_id=%d | question='%s' | TTL=%ds | sql_length=%d",
+                role, user_id, question[:50], ttl, len(generated_sql)
             )
             return True
 
