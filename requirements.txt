@@ -13,6 +13,10 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.9
 
+streamlit==1.35.0
+plotly==5.22.0
+pandas==2.2.2
+
 redis==5.0.4
 numpy==1.26.4
 
