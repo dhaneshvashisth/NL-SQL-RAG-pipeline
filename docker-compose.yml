@@ -1,14 +1,13 @@
-version: "3.9"
-
 services:
+
   postgres:
     image: postgres:16
     container_name: nl_sql_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: nlsql_user
+      POSTGRES_PASSWORD: nlsql_pass_2024
+      POSTGRES_DB: nlsql_db
       POSTGRES_HOST_AUTH_METHOD: md5
     ports:
       - "5433:5432"
@@ -18,6 +17,13 @@ services:
     command: postgres -c hba_file=/etc/postgresql/pg_hba.conf
     networks:
       - nl_sql_network
+    healthcheck:
+
+      test: ["CMD-SHELL", "pg_isready -U nlsql_user -d nlsql_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -30,6 +36,14 @@ services:
       - qdrant_data:/qdrant/storage
     networks:
       - nl_sql_network
+    healthcheck:
+      # test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || curl -f http://localhost:6333/health || exit 1"]
+      test: ["CMD-SHELL", "timeout 2s bash -c 'cat < /dev/null > /dev/tcp/localhost/6333' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
 
   redis:
     image: redis:7-alpine
@@ -42,11 +56,100 @@ services:
     command: redis-server --appendonly yes
     networks:
       - nl_sql_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nl_sql_api
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    environment:
+
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432        # internal container port
+      POSTGRES_USER: nlsql_user
+      POSTGRES_PASSWORD: nlsql_pass_2024
+      POSTGRES_DB: nlsql_db
+
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_COLLECTION_NAME: schema_embeddings
+
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_TTL_SECONDS: 3600
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRY_MINUTES: 60
+
+      # App
+      APP_ENV: production
+      LOG_LEVEL: INFO
+
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000
+
+    networks:
+      - nl_sql_network
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nl_sql_streamlit
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    command: streamlit run frontend/app.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+      --browser.gatherUsageStats=false
+    networks:
+      - nl_sql_network
+
+
 
 volumes:
   postgres_data:
   qdrant_data:
   redis_data:
+
 
 networks:
   nl_sql_network:
