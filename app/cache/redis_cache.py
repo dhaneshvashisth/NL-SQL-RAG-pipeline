@@ -197,7 +197,9 @@ class SemanticCache:
             if best_similarity >= SIMILARITY_THRESHOLD and best_entry:
                 logger.info(
                     "Cache HIT |  role=%s | user_id=%d | similarity=%.4f | original_question='%s'",
-                    best_similarity, role, user_id, 
+                    role,
+                    user_id,
+                    best_similarity,
                     best_entry.get("question", "")[:50]
                 )
                 best_entry["cache_similarity"] = best_similarity

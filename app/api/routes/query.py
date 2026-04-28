@@ -1,7 +1,7 @@
 import time
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.auth.models import TokenData
 from app.auth.rbac import get_current_user
@@ -21,14 +21,14 @@ class QueryRequest(BaseModel):
     Just the natural language question — everything else
     comes from the JWT token (who you are, your role).
     """
-    question: str
-
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "question": "show me all pending transactions this week"
             }
         }
+    )
+    question: str
 
 
 class QueryResponse(BaseModel):

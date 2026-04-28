@@ -1,62 +1,3 @@
-
-
-# import pytest
-# from app.auth.jwt_handler import create_access_token, decode_access_token
-# from app.auth.models import UserRole, get_rbac_scope
-
-
-# def test_create_and_decode_token():
-#     """Token we create should decode to same values."""
-#     token = create_access_token(
-#         user_id=1, username="admin_dv",
-#         role="admin", parent_id=None
-#     )
-#     decoded = decode_access_token(token)
-#     assert decoded.user_id == 1
-#     assert decoded.username == "admin_dv"
-#     assert decoded.role == UserRole.ADMIN
-
-
-# def test_agent_rbac_scope():
-#     """Agent should only see their own transactions."""
-#     from app.auth.models import TokenData
-#     td = TokenData(user_id=5, username="agent_dhoni",
-#                    role=UserRole.AGENT, parent_id=2)
-#     scope = get_rbac_scope(td)
-#     assert scope.filter_column == "agent_id"
-#     assert scope.filter_value == 5
-
-
-# def test_admin_rbac_scope():
-#     """Admin should have no filter — full access."""
-#     from app.auth.models import TokenData
-#     td = TokenData(user_id=1, username="admin_dv",
-#                    role=UserRole.ADMIN, parent_id=None)
-#     scope = get_rbac_scope(td)
-#     assert scope.filter_column is None
-#     assert scope.filter_value is None
-
-
-# def test_invalid_token_raises():
-#     """Tampered token should raise ValueError."""
-#     with pytest.raises(ValueError):
-#         decode_access_token("this.is.fake")
-
-
-
-"""
-test_auth.py — Authentication and JWT tests
-
-WHAT WE TEST:
-1. Token creation and decoding roundtrip
-2. Tampered tokens are rejected
-3. Expired tokens are rejected
-4. All three roles decode correctly
-5. RBAC scopes are correct per role
-6. Login endpoint works via HTTP
-7. Protected endpoints reject unauthenticated requests
-"""
-
 import pytest
 from datetime import timedelta
 from jose import jwt
@@ -66,7 +7,6 @@ from app.auth.models import UserRole, TokenData, get_rbac_scope
 from app.utils.config import config
 
 
-# ── JWT Unit Tests ────────────────────────────────────────────
 
 def test_create_token_returns_string():
     """Token must be a non-empty string."""
@@ -114,10 +54,8 @@ def test_tampered_token_rejected():
     """Modifying token payload must raise ValueError."""
     token = create_access_token(1, "admin_dv", "admin")
 
-    # Tamper: decode without verification, change role, re-encode without secret
     parts = token.split(".")
     import base64, json
-    # Corrupt the payload part
     tampered = token[:-5] + "XXXXX"
 
     with pytest.raises(ValueError):
@@ -141,7 +79,6 @@ def test_wrong_secret_token_rejected():
         decode_access_token(fake_token)
 
 
-# ── RBAC Scope Tests ──────────────────────────────────────────
 
 def test_admin_rbac_no_filter():
     """Admin must have NO filter — full data access."""
@@ -167,19 +104,13 @@ def test_agent_rbac_scoped():
     assert scope.filter_value == 4
 
 
-# ── API Endpoint Tests ────────────────────────────────────────
-
 @pytest.mark.asyncio
-async def test_login_admin_success(client):
+async def test_login_admin_success(client, db_pool):
     """Valid admin credentials must return JWT token."""
-    async with client as c:
-        response = await c.post(
-            "/auth/login",
-            data={
-                "username": "admin_dv",
-                "password": "Admin@1234"
-            }
-        )
+    response = await client.post(
+        "/auth/login",
+        data={"username": "admin_dv", "password": "Admin@1234"}
+    )
     assert response.status_code == 200
     data = response.json()
     assert "access_token" in data
@@ -188,41 +119,32 @@ async def test_login_admin_success(client):
 
 
 @pytest.mark.asyncio
-async def test_login_wrong_password_rejected(client):
+async def test_login_wrong_password_rejected(client, db_pool):
     """Wrong password must return 401."""
-    async with client as c:
-        response = await c.post(
-            "/auth/login",
-            data={
-                "username": "admin_dv",
-                "password": "WrongPassword"
-            }
-        )
+    response = await client.post(
+        "/auth/login",
+        data={"username": "admin_dv", "password": "WrongPassword"}
+    )
     assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_login_nonexistent_user_rejected(client):
+async def test_login_nonexistent_user_rejected(client, db_pool):
     """Non-existent username must return 401."""
-    async with client as c:
-        response = await c.post(
-            "/auth/login",
-            data={
-                "username": "fake_user_xyz",
-                "password": "anything"
-            }
-        )
+    response = await client.post(
+        "/auth/login",
+        data={"username": "fake_user_xyz", "password": "anything"}
+    )
     assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_me_endpoint_returns_role(client, admin_token):
+async def test_me_endpoint_returns_role(client, db_pool, admin_token):
     """Authenticated /auth/me must return correct role."""
-    async with client as c:
-        response = await c.get(
-            "/auth/me",
-            headers={"Authorization": f"Bearer {admin_token}"}
-        )
+    response = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
     assert response.status_code == 200
     data = response.json()
     assert data["role"] == "admin"
@@ -232,21 +154,19 @@ async def test_me_endpoint_returns_role(client, admin_token):
 @pytest.mark.asyncio
 async def test_protected_endpoint_without_token(client):
     """Request without token must return 401."""
-    async with client as c:
-        response = await c.post(
-            "/query/",
-            json={"question": "show transactions"}
-        )
+    response = await client.post(
+        "/query/",
+        json={"question": "show transactions"}
+    )
     assert response.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_protected_endpoint_with_fake_token(client):
     """Request with fake token must return 401."""
-    async with client as c:
-        response = await c.post(
-            "/query/",
-            json={"question": "show transactions"},
-            headers={"Authorization": "Bearer fake.token.here"}
-        )
+    response = await client.post(
+        "/query/",
+        json={"question": "show transactions"},
+        headers={"Authorization": "Bearer fake.token.here"}
+    )
     assert response.status_code == 401
