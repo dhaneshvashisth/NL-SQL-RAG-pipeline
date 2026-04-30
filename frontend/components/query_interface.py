@@ -45,7 +45,7 @@ def render_sidebar(api_client) -> None:
             render_role_badge(st.session_state.role),
             unsafe_allow_html=True
         )
-        st.markdown(f"**{st.session_state.username}**")
+        st.markdown(f"**{st.session_state.full_name}**")
         st.divider()
 
         st.markdown("### 🔌 System Status")
